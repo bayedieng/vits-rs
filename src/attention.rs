@@ -66,7 +66,9 @@ impl MultiHeadAttention {
     }
 
     pub fn forward(&self, x: &Tensor, c: &Tensor) -> Result<Tensor> {
+        println!("printing attention");
         let q = self.conv_q.forward(x)?;
+        println!("get query");
         let k = self.conv_k.forward(c)?;
         let v = self.conv_v.forward(c)?;
 
@@ -87,18 +89,20 @@ impl Ffn {
         let conv1d_config = nn::Conv1dConfig::default();
         let conv_1 = nn::conv1d(
             config.hidden_channels,
-            config.hidden_channels,
+            config.filter_channels,
             config.kernel_size,
             conv1d_config,
             vb.pp("conv_1"),
         )?;
+
         let conv_2 = nn::conv1d(
-            config.hidden_channels,
+            config.filter_channels,
             config.hidden_channels,
             config.kernel_size,
             conv1d_config,
             vb.pp("conv_2"),
         )?;
+
         Ok(Self {
             conv_1,
             conv_2,
@@ -158,11 +162,12 @@ impl AttentionEncoder {
             let gamma_1 = vb_norm_1.get(config.hidden_channels, "gamma")?;
             let beta_1 = vb_norm_1.get(config.hidden_channels, "beta")?;
             norm_layer_1_vec.push(nn::LayerNorm::new(gamma_1, beta_1, 1e5));
-            let vb_norm_2 = vb.pp("norm_layers_2.{i}");
+            let vb_norm_2 = vb.pp(&format!("norm_layers_2.{i}"));
             let gamma_2 = vb_norm_2.get(config.hidden_channels, "gamma")?;
             let beta_2 = vb_norm_2.get(config.hidden_channels, "beta")?;
             norm_layer_2_vec.push(nn::LayerNorm::new(gamma_2, beta_2, 1e5));
         }
+        println!("Successfully loaded Vits Parameters!");
         Ok(Self {
             attention_layers: attn_layer_vec,
             norm_layers_1: norm_layer_1_vec,
@@ -173,15 +178,20 @@ impl AttentionEncoder {
     }
 
     pub fn forward(&self, x: &Tensor, x_mask: &Tensor) -> Result<Tensor> {
-        let attn_mask = (x_mask.unsqueeze(2)? * x_mask.unsqueeze(x.dims()[x.dims().len() - 1]))?;
-        let x = x.matmul(&x_mask)?;
+        let x_dim = x.dims();
+        println!("{x_dim:?}");
+        let attn_mask = (x_mask.unsqueeze(2)? * x_mask.unsqueeze(x_mask.dims().len() - 1))?;
+        println!("attn mask passed.");
+        println!("{:?}", &x_mask.transpose(2, 1).unwrap().shape());
+        let x = x.matmul(&x_mask.transpose(1, 2)?)?;
         let mut result_vec = Vec::with_capacity(1);
-
+        println!("entering loop.");
         for i in 0..self.n_layers {
             let y = self.attention_layers[i].forward(&x, &x)?;
-            println!("attention layer forwards successfully");
-            let x = forward_layer_norm(&self.norm_layers_1[i], &(&x + y)?)?;
+            println!("Passed Attention Layers! iter {i}");
 
+            let x = forward_layer_norm(&self.norm_layers_1[i], &(&x + y)?)?;
+            println!("Passed Layer Norm 1! iter {i}");
             let y = self.ffn_layers[i].forward(&x, x_mask)?;
             let x = forward_layer_norm(&self.norm_layers_2[i], &(&x + y)?)?;
             if i == self.n_layers - 1 {
